@@ -1,0 +1,2 @@
+# Baseballcharter
+Scouting app. 
