@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+<title>BaseCharter ⚾</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+body{font-family:'Trebuchet MS',sans-serif;min-height:100vh;overscroll-behavior:none;}
+button,input,select,textarea{font-family:inherit;}
+button{cursor:pointer;}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.overlay{position:fixed;inset:0;z-index:50;}
+.overlay-bg{position:absolute;inset:0;background:rgba(0,0,0,.67);}
+.sidebar{position:absolute;left:0;top:0;bottom:0;width:285px;padding:16px;overflow-y:auto;}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;}
+.modal-box{border-radius:16px;padding:18px;width:100%;max-width:780px;max-height:93vh;display:flex;flex-direction:column;gap:10px;}
+</style>
+</head>
+<body>
+<div id="app" style="min-height:100vh"></div>
+<script>
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+var PT=[
+  {id:"FB",label:"Fastball",color:"#3B82F6"},
+  {id:"CB",label:"Curveball",color:"#F59E0B"},
+  {id:"SL",label:"Slider",color:"#10B981"},
+  {id:"CH",label:"Changeup",color:"#EC4899"},
+  {id:"CT",label:"Cutter",color:"#8B5CF6"},
+  {id:"SI",label:"Sinker",color:"#F97316"},
+  {id:"OT",label:"Other",color:"#94A3B8"}
+];
+var RESULTS=["Ball","Strike (Looking)","Strike (Swinging)","Foul","In Play - Out","In Play - Hit","HBP","Wild Pitch"];
+var CONTACTS=["Hard","Medium","Soft"];
+var OUTCOMES=["Single","Double","Triple","Home Run","Out - Groundout","Out - Flyout","Out - Lineout","Out - Sac Fly","Out - Sac Bunt","Out - Fielder's Choice","Error"];
+var INNINGS=[1,2,3,4,5,6,7,8,9,"EXT"];
+var FPOS=[{id:"P",x:50,y:58},{id:"C",x:50,y:80},{id:"1B",x:66,y:65},{id:"2B",x:60,y:45},{id:"3B",x:34,y:65},{id:"SS",x:40,y:45},{id:"LF",x:18,y:28},{id:"CF",x:50,y:12},{id:"RF",x:82,y:28}];
+
+function ptC(id){for(var i=0;i<PT.length;i++)if(PT[i].id===id)return PT[i].color;return”#888”;}
+function ptL(id){for(var i=0;i<PT.length;i++)if(PT[i].id===id)return PT[i].label;return id;}
+function inPlay(r){return r===“In Play - Out”||r===“In Play - Hit”;}
+function isK(r){return r===“Strike (Looking)”||r===“Strike (Swinging)”;}
+function isOut(result,outcome){if(outcome)return[“Single”,“Double”,“Triple”,“Home Run”].indexOf(outcome)<0;return isK(result)||result===“In Play - Out”;}
+function isHit(result,outcome){if(outcome)return[“Single”,“Double”,“Triple”,“Home Run”].indexOf(outcome)>=0;return result===“In Play - Hit”;}
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+var S={
+screen:“home”,game:null,side:“our”,sub:“hitters”,
+selBatter:{our:null,their:null},selPitcher:{our:null,their:null},
+sidebarOpen:false,isBullpen:false,showReport:false,histGame:null,
+confirmDel:null,pitchStep:null,pend:{},abIdx:0,
+pitcherInning:1,pitcherTab:“chart”,subModal:null,editingId:null,
+reportView:“ourHit”,reportText:””,reportLoading:false,reportDone:false,
+dayMode:false
+};
+var GAMES=[];
+try{GAMES=JSON.parse(localStorage.getItem(“bc_v8”)||”[]”);}catch(e){}
+function saveGames(){try{localStorage.setItem(“bc_v8”,JSON.stringify(GAMES));}catch(e){}}
+
+// ─── THEME ────────────────────────────────────────────────────────────────────
+function T(){
+if(S.dayMode)return{
+bg:”#F1F5F9”,bg2:”#FFFFFF”,bg3:”#E2E8F0”,
+card:”#FFFFFF”,border:”#CBD5E1”,
+text:”#0F172A”,text2:”#334155”,text3:”#64748B”,
+svgBg:”#FFFFFF”,zoneFill:”#DCFCE7”,zoneStroke:”#334155”,dotTxt:”#0F172A”
+};
+return{
+bg:”#0F172A”,bg2:”#1E293B”,bg3:”#334155”,
+card:”#1E293B”,border:”#334155”,
+text:”#F1F5F9”,text2:”#CBD5E1”,text3:”#64748B”,
+svgBg:”#0F172A”,zoneFill:”#0D1F0D”,zoneStroke:”#475569”,dotTxt:“white”
+};
+}
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function lk(sd,st){sd=sd||S.side;st=st||S.sub;return(sd===“our”?“our”:“their”)+(st===“hitters”?“Hitters”:“Pitchers”);}
+function getList(sd,st){if(!S.game)return[];return S.game[lk(sd,st)]||[];}
+function getCurrent(){var list=getList(),selId=S.sub===“hitters”?S.selBatter[S.side]:S.selPitcher[S.side];for(var i=0;i<list.length;i++)if(list[i].id===selId)return list[i];return null;}
+function accent(){return S.side===“our”?”#1D4ED8”:”#7C3AED”;}
+function setSelId(id){var o={};o[S.side]=id;if(S.sub===“hitters”)S.selBatter=Object.assign({},S.selBatter,o);else S.selPitcher=Object.assign({},S.selPitcher,o);}
+
+function updateGame(g){S.game=g;render();}
+function updateList(list){var g=Object.assign({},S.game);g[lk()]=list;updateGame(g);}
+
+function setState(p){Object.assign(S,p);render();}
+
+function addPerson(name){
+var isPitch=S.sub===“pitchers”;
+var obj=isPitch?{id:Date.now(),name:name,innings:{},notes:[],bullpen:S.isBullpen}:{id:Date.now(),name:name,atBats:[{pitches:[],notes:[],inning:1}]};
+updateList(getList().concat([obj]));
+setSelId(obj.id);S.sidebarOpen=false;
+}
+
+// Hitter ops
+function addPitchToHitter(bid,abIdx,pitch){
+updateList(getList().map(function(b){
+if(b.id!==bid)return b;
+return Object.assign({},b,{atBats:b.atBats.map(function(ab,i){
+if(i!==abIdx)return ab;
+return Object.assign({},ab,{pitches:ab.pitches.concat([pitch])});
+})});
+}));
+}
+function addNoteToHitter(bid,abIdx,note){
+updateList(getList().map(function(b){
+if(b.id!==bid)return b;
+return Object.assign({},b,{atBats:b.atBats.map(function(ab,i){
+if(i!==abIdx)return ab;
+return Object.assign({},ab,{notes:ab.notes.concat([note])});
+})});
+}));
+}
+function addNewAB(bid,inning){
+updateList(getList().map(function(b){
+if(b.id!==bid)return b;
+return Object.assign({},b,{atBats:b.atBats.concat([{pitches:[],notes:[],inning:inning}])});
+}));
+}
+function undoHitter(bid,abIdx){
+bid=Number(bid);
+updateList(getList().map(function(b){
+if(b.id!==bid)return b;
+return Object.assign({},b,{atBats:b.atBats.map(function(ab,i){
+if(i!==abIdx)return ab;
+return Object.assign({},ab,{pitches:ab.pitches.slice(0,-1)});
+})});
+}));
+}
+function toggleLefty(id){
+id=Number(id);
+var g=Object.assign({},S.game);
+var key=(S.side===“our”?“our”:“their”)+“Hitters”;
+g[key]=(g[key]||[]).map(function(b){return b.id===id?Object.assign({},b,{lefty:!b.lefty}):b;});
+updateGame(g);
+}
+function doNewAB(bid,totalABs){
+bid=Number(bid);
+var el=document.getElementById(“new-ab-inn”);
+if(!el)return;
+var v=el.value;
+var inning=isNaN(v)?v:parseInt(v);
+var g=Object.assign({},S.game);
+var key=lk();
+g[key]=(g[key]||[]).map(function(b){
+if(b.id!==bid)return b;
+return Object.assign({},b,{atBats:b.atBats.concat([{pitches:[],notes:[],inning:inning}])});
+});
+S.abIdx=totalABs;
+updateGame(g);
+}
+
+// Pitcher ops
+function addPitchToPitcher(pid,pitch){
+var inn=pitch.inning||1;
+updateList(getList().map(function(p){
+if(p.id!==pid)return p;
+var innings=Object.assign({},p.innings);
+innings[inn]=(innings[inn]||[]).concat([pitch]);
+return Object.assign({},p,{innings:innings});
+}));
+}
+function addNoteToPitcher(pid,note){
+updateList(getList().map(function(p){
+if(p.id!==pid)return p;
+return Object.assign({},p,{notes:(p.notes||[]).concat([note])});
+}));
+}
+function undoPitcher(pid,inn){
+updateList(getList().map(function(p){
+if(p.id!==pid)return p;
+var innings=Object.assign({},p.innings);
+innings[inn]=(innings[inn]||[]).slice(0,-1);
+return Object.assign({},p,{innings:innings});
+}));
+}
+function editName(id){
+S.editingId=id;render();
+setTimeout(function(){var el=document.getElementById(“edit-inp”);if(el){el.focus();el.select();}},80);
+}
+function saveEditName(){
+var el=document.getElementById(“edit-inp”);
+if(!el)return;
+var v=el.value.trim();
+if(v)updateList(getList().map(function(x){return x.id===S.editingId?Object.assign({},x,{name:v}):x;}));
+S.editingId=null;render();
+}
+
+// Lineup
+function getLineup(){
+if(!S.game)return[];
+var key=(S.side===“our”?“our”:“their”)+“LineupOrder”;
+var order=S.game[key]||[];
+var list=getList(S.side,“hitters”);
+var ids=list.map(function(b){return b.id;});
+var valid=order.filter(function(id){return ids.indexOf(id)>=0;});
+ids.forEach(function(id){if(valid.indexOf(id)<0)valid.push(id);});
+return valid;
+}
+function saveLineup(order){
+var key=(S.side===“our”?“our”:“their”)+“LineupOrder”;
+var g=Object.assign({},S.game);g[key]=order;updateGame(g);
+}
+function moveUp(id){var o=getLineup().slice(),i=o.indexOf(id);if(i<=0)return;var tmp=o[i-1];o[i-1]=o[i];o[i]=tmp;saveLineup(o);}
+function moveDown(id){var o=getLineup().slice(),i=o.indexOf(id);if(i<0||i>=o.length-1)return;var tmp=o[i+1];o[i+1]=o[i];o[i]=tmp;saveLineup(o);}
+
+// Sub
+function confirmSub(){
+var m=S.subModal;
+if(!m||!m.subName||!m.subName.trim())return;
+var key=lk(S.side,“hitters”);
+var list=getList(S.side,“hitters”);
+var forB=null;for(var i=0;i<list.length;i++)if(list[i].id===m.forId){forB=list[i];break;}
+if(!forB)return;
+var subId=Date.now();
+var subP={id:subId,name:m.subName.trim(),atBats:[{pitches:[],notes:[],inning:m.inning||1}],subFor:forB.name,subType:m.subType};
+var newList,newOrder;
+if(m.subType===“onetime”){
+newList=list.map(function(b){return b.id===m.forId?Object.assign({},b,{subbedOutBy:subId}):b;});
+newList=newList.concat([subP]);
+newOrder=getLineup().slice();
+var idx=newOrder.indexOf(m.forId);
+if(idx>=0)newOrder.splice(idx+1,0,subId);else newOrder.push(subId);
+}else{
+newList=list.map(function(b){return b.id===m.forId?Object.assign({},b,{removedBy:m.subName.trim()}):b;});
+newList=newList.concat([subP]);
+newOrder=getLineup().map(function(id){return id===m.forId?subId:id;});
+}
+var g=Object.assign({},S.game);
+g[key]=newList;
+g[(S.side===“our”?“our”:“their”)+“LineupOrder”]=newOrder;
+setSelId(subId);S.subModal=null;S.abIdx=0;
+updateGame(g);
+}
+
+// ─── SVG ──────────────────────────────────────────────────────────────────────
+function zoneClick(e,tapId){
+var svg=e.currentTarget,r=svg.getBoundingClientRect();
+var x=((e.clientX-r.left)/r.width)*100,y=((e.clientY-r.top)/r.height)*100;
+if(tapId===“entry”){S.pend.location={x:x,y:y};S.pitchStep=“result”;render();}
+}
+function sprayClick(e){
+var svg=e.currentTarget,r=svg.getBoundingClientRect();
+var x=((e.clientX-r.left)/r.width)*100,y=((e.clientY-r.top)/r.height)*100;
+S.pend.fieldLocation={x:x,y:y};S.pitchStep=“outcome”;render();
+}
+
+function buildZone(pitches,tapId,inLbl,awayLbl){
+var t=T(),interactive=!!tapId;
+pitches=pitches||[];
+inLbl=inLbl||“IN”;awayLbl=awayLbl||“AWAY”;
+var dots=pitches.map(function(p,i){
+if(!p.location)return””;
+return’<circle cx="'+p.location.x+'" cy="'+p.location.y+'" r="6" fill="'+ptC(p.pitchType)+'" opacity=".92" stroke="rgba(0,0,0,.15)" stroke-width=".5"/>’
++’<text x="'+p.location.x+'" y="'+(p.location.y+2.2)+'" fill="'+t.dotTxt+'" font-size="5" text-anchor="middle" font-weight="bold">’+(i+1)+’</text>’;
+}).join(””);
+var hint=interactive?’<text x="50" y="52" fill="#F59E0B" font-size="6" text-anchor="middle" opacity=".7" font-weight="bold">TAP TO PLACE</text>’:””;
+var oc=tapId?‘onclick=“zoneClick(event,'’+tapId+’')”’:””;
+return’<div style="width:100%;aspect-ratio:1"><svg viewBox=“0 0 100 100” style=“width:100%;height:100%;cursor:’+(interactive?“crosshair”:“default”)+’;border:2px solid ‘+t.border+’;border-radius:10px;background:’+t.svgBg+’” ‘+oc+’>’
++’<rect x="10" y="10" width="80" height="80" fill="none" stroke="'+t.bg3+'" stroke-width=".5"/>’
++’<rect x="25" y="25" width="50" height="50" fill="'+t.zoneFill+'" stroke="'+t.zoneStroke+'" stroke-width="1.5" stroke-dasharray="4,2"/>’
++’<line x1="41.7" y1="25" x2="41.7" y2="75" stroke="'+t.bg3+'" stroke-width="1"/>’
++’<line x1="58.3" y1="25" x2="58.3" y2="75" stroke="'+t.bg3+'" stroke-width="1"/>’
++’<line x1="25" y1="41.7" x2="75" y2="41.7" stroke="'+t.bg3+'" stroke-width="1"/>’
++’<line x1="25" y1="58.3" x2="75" y2="58.3" stroke="'+t.bg3+'" stroke-width="1"/>’
++’<text x="5" y="52" fill="'+t.text3+'" font-size="3.5" text-anchor="middle">’+inLbl+’</text>’
++’<text x="95" y="52" fill="'+t.text3+'" font-size="3.5" text-anchor="middle">’+awayLbl+’</text>’
++’<text x="50" y="8" fill="'+t.text3+'" font-size="4.5" text-anchor="middle">HIGH</text>’
++’<text x="50" y="98" fill="'+t.text3+'" font-size="4.5" text-anchor="middle">LOW</text>’
++dots+hint+’</svg></div>’;
+}
+
+function buildSpray(plays,interactive){
+var t=T();plays=plays||[];
+var lines=plays.map(function(p){
+if(!p.fieldLocation)return””;
+var out=isOut(p.result,p.abOutcome);
+var c=ptC(p.pitchType);
+var dot=out
+?’<circle cx="'+p.fieldLocation.x+'" cy="'+p.fieldLocation.y+'" r="5" fill="none" stroke="'+c+'" stroke-width="1.8"/>’
++’<line x1="'+(p.fieldLocation.x-3)+'" y1="'+(p.fieldLocation.y-3)+'" x2="'+(p.fieldLocation.x+3)+'" y2="'+(p.fieldLocation.y+3)+'" stroke="'+c+'" stroke-width="1.8"/>’
++’<line x1="'+(p.fieldLocation.x+3)+'" y1="'+(p.fieldLocation.y-3)+'" x2="'+(p.fieldLocation.x-3)+'" y2="'+(p.fieldLocation.y+3)+'" stroke="'+c+'" stroke-width="1.8"/>’
+:’<circle cx="'+p.fieldLocation.x+'" cy="'+p.fieldLocation.y+'" r="4.5" fill="'+c+'" opacity=".95"/>’;
+return’<line x1="50" y1="80" x2="'+p.fieldLocation.x+'" y2="'+p.fieldLocation.y+'" stroke="'+c+'" stroke-width="2" opacity=".75"/>’+dot;
+}).join(””);
+var fLabels=FPOS.map(function(pos){return’<text x="'+pos.x+'" y="'+pos.y+'" fill="'+t.text3+'" font-size="4.5" text-anchor="middle" font-weight="600">’+pos.id+’</text>’;}).join(””);
+var hint=interactive?’<text x="50" y="45" fill="#F59E0B" font-size="6" text-anchor="middle" opacity=".7" font-weight="bold">TAP FIELD</text>’:””;
+var oc=interactive?‘onclick=“sprayClick(event)”’:””;
+var op=S.dayMode?.6:.4,op2=S.dayMode?.5:.3;
+return’<div style="width:100%;aspect-ratio:1"><svg viewBox=“0 0 100 100” style=“width:100%;height:100%;cursor:’+(interactive?“crosshair”:“default”)+’;border:2px solid ‘+t.border+’;border-radius:10px;background:’+t.svgBg+’” ‘+oc+’>’
++’<path d="M 50 80 Q 50 5 95 80 Z" fill="#14532D" opacity="'+op+'"/>’
++’<path d="M 50 80 Q 50 5 5 80 Z" fill="#14532D" opacity="'+op+'"/>’
++’<path d="M 50 80 L 66 65 L 50 45 L 34 65 Z" fill="#92400E" opacity="'+op2+'"/>’
++’<line x1="50" y1="80" x2="2" y2="42" stroke="'+t.text3+'" stroke-width="1"/>’
++’<line x1="50" y1="80" x2="98" y2="42" stroke="'+t.text3+'" stroke-width="1"/>’
++fLabels+lines+hint+’</svg></div>’;
+}
+
+// ─── PITCH ENTRY ──────────────────────────────────────────────────────────────
+function startEntry(){S.pend={};S.pitchStep=“type”;render();}
+function cancelEntry(){S.pitchStep=null;S.pend={};render();}
+function pickType(id){S.pend.pitchType=id;S.pitchStep=“location”;render();}
+function pickKfast(result){S.pend.result=result;S.pend.location={x:50,y:50};finalizePitch();}
+var _processing=false;
+function pickResult(result){
+if(_processing)return;
+_processing=true;
+setTimeout(function(){_processing=false;},500);
+S.pend.result=result;
+if(S.sub===“pitchers”){finalizePitch();return;}
+if(inPlay(result)){S.pitchStep=“contact”;render();return;}
+finalizePitch();
+}
+function pickContact(c){
+if(_processing)return;
+_processing=true;
+setTimeout(function(){_processing=false;},500);
+S.pend.contact=c;S.pitchStep=“spray”;render();
+}
+function pickOutcome(o){
+if(_processing)return;
+_processing=true;
+setTimeout(function(){_processing=false;},500);
+S.pend.abOutcome=o;finalizePitch();
+}
+function finalizePitch(){
+if(!S.pitchStep)return;
+var p=Object.assign({},S.pend),cur=getCurrent();
+S.pitchStep=null;S.pend={};
+if(!cur){render();return;}
+if(S.sub===“hitters”){
+addPitchToHitter(cur.id,Math.min(S.abIdx,cur.atBats.length-1),p);
+}else{
+addPitchToPitcher(cur.id,Object.assign({},p,{inning:cur.bullpen?“BP”:(S.pitcherInning||1)}));
+}
+}
+
+function pitchControls(forPitcher,inLbl,awayLbl){
+var t=T(),step=S.pitchStep,pend=S.pend;
+var sel=null;for(var i=0;i<PT.length;i++)if(PT[i].id===pend.pitchType){sel=PT[i];break;}
+
+if(step===“type”){
+var btns=PT.map(function(pt){
+return’<button onclick="pickType(\''+pt.id+'\')" style="background:'+pt.color+'22;border:2px solid '+pt.color+';color:'+pt.color+';border-radius:8px;padding:10px 4px;font-size:12px;font-weight:800">’+pt.label+’</button>’;
+}).join(””);
+var kbtns=!forPitcher
+?’<button onclick="pickKfast(\'Strike (Swinging)\')" style="background:#7F1D1D33;border:2px solid #EF4444;color:#EF4444;border-radius:8px;padding:10px 4px;font-size:11px;font-weight:800">⚡K</button>’
++’<button onclick="pickKfast(\'Strike (Looking)\')" style="background:#78350F33;border:2px solid #F59E0B;color:#F59E0B;border-radius:8px;padding:10px 4px;font-size:11px;font-weight:800">👁Kl</button>’:””
+return’<div style="background:'+t.bg2+';border-radius:10px;padding:12px;border:1px solid '+t.border+'">’
++’<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">’
++’<span style="color:'+t.text3+';font-size:11px;font-weight:600">Select pitch type</span>’
++’<button onclick="cancelEntry()" style="background:none;border:none;color:'+t.text3+';font-size:20px">✕</button>’
++’</div>’
++’<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">’+btns+kbtns+’</div>’
++’</div>’;
+}
+if(step===“location”){
+var curPitches=[];
+if(getCurrent()){
+if(S.sub===“hitters”){var cAB=getCurrent().atBats[Math.min(S.abIdx,getCurrent().atBats.length-1)];curPitches=cAB?cAB.pitches:[];}
+else{Object.keys(getCurrent().innings||{}).forEach(function(k){curPitches=curPitches.concat(getCurrent().innings[k]||[]);});}
+}
+return’<div>’
++’<div style=“color:’+(sel?sel.color:”#fff”)+’;font-weight:700;font-size:13px;margin-bottom:6px”>● ‘+(sel?sel.label:””)+(forPitcher?” — tap location”:” — tap to place”)+’</div>’
++buildZone(curPitches,“entry”,inLbl,awayLbl)
++’</div>’;
+}
+if(step===“result”){
+var rbtns=RESULTS.map(function(r){
+var isBall=r===“Ball”,isSt=r.indexOf(“Strike”)===0,isH=r===“In Play - Hit”,isO=r===“In Play - Out”;
+var bg=isBall?”#14532D22”:isSt?”#7F1D1D22”:isH?”#065F4622”:isO?”#92400E22”:t.bg;
+var bc=isBall?”#22C55E”:isSt?”#EF4444”:isH?”#10B981”:isO?”#F59E0B”:t.border;
+return’<button onclick="pickResult(\''+r+'\')" style="background:'+bg+';border:1.5px solid '+bc+';color:'+t.text+';border-radius:8px;padding:11px 4px;font-size:12px;font-weight:600">’+r+’</button>’;
+}).join(””);
+return’<div style="background:'+t.bg2+';border-radius:10px;padding:12px;border:1px solid '+t.border+'">’
++’<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">’
++’<span style="color:'+t.text3+';font-size:11px;font-weight:600">Result?</span>’
++’<button onclick="cancelEntry()" style="background:none;border:none;color:'+t.text3+';font-size:20px">✕</button>’
++’</div>’
++’<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">’+rbtns+’</div>’
++’</div>’;
+}
+if(step===“contact”){
+var cbtns=CONTACTS.map(function(c){
+var col=c===“Hard”?”#EF4444”:c===“Medium”?”#F59E0B”:”#22C55E”;
+return’<button onclick="pickContact(\''+c+'\')" style="flex:1;background:'+col+'22;border:2px solid '+col+';color:'+col+';border-radius:10px;padding:14px 4px;font-size:14px;font-weight:800">’+c+’</button>’;
+}).join(””);
+return’<div style="background:'+t.bg2+';border-radius:10px;padding:12px;border:1px solid '+t.border+'">’
++’<div style="color:'+t.text3+';font-size:11px;font-weight:600;margin-bottom:8px">Contact quality?</div>’
++’<div style="display:flex;gap:8px">’+cbtns+’</div></div>’;
+}
+if(step===“spray”){
+return’<div><div style="color:'+t.text2+';font-weight:700;font-size:13px;margin-bottom:6px">Tap where it was hit</div>’+buildSpray([],true)+’</div>’;
+}
+if(step===“outcome”){
+var olist=OUTCOMES.map(function(o){
+var hit=[“Single”,“Double”,“Triple”,“Home Run”].indexOf(o)>=0;
+var esc=o.replace(/’/g,”'”);
+return’<button onclick=“pickOutcome('’+esc+’')” style=“background:’+(hit?”#065F4622”:”#7F1D1D22”)+’;border:1.5px solid ‘+(hit?”#10B981”:”#EF4444”)+’;color:’+t.text+’;border-radius:8px;padding:10px 4px;font-size:11px;font-weight:600”>’+o+’</button>’;
+}).join(””);
+return’<div style="background:'+t.bg2+';border-radius:10px;padding:12px;border:1px solid '+t.border+'">’
++’<div style="color:'+t.text3+';font-size:11px;font-weight:600;margin-bottom:8px">Hit result?</div>’
++’<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">’+olist+’</div></div>’;
+}
+return””;
+}
+
+// ─── HITTER VIEW ──────────────────────────────────────────────────────────────
+function buildHitterView(batter){
+var t=T(),a=accent();
+var safeIdx=Math.min(S.abIdx,batter.atBats.length-1);
+var ab=batter.atBats[safeIdx]||{pitches:[],notes:[],inning:1};
+var isLefty=!!batter.lefty;
+var inLbl=isLefty?“AWAY”:“IN”,awayLbl=isLefty?“IN”:“AWAY”;
+var sel=null;for(var si=0;si<PT.length;si++)if(PT[si].id===S.pend.pitchType){sel=PT[si];break;}
+
+var innSel=INNINGS.map(function(i){return’<option value="'+i+'">’+(i===“EXT”?“Extra”:“Inning “+i)+’</option>’;}).join(””);
+
+var abTabs=batter.atBats.map(function(a2,i){
+var last=a2.pitches[a2.pitches.length-1];
+var outcome=last?(last.abOutcome||(isK(last.result)?(last.result===“Strike (Looking)”?“Kl”:“K”):””)):””;
+var hit=last&&isHit(last.result,last.abOutcome),kout=outcome===“K”||outcome===“Kl”;
+var badge=outcome?’<span style=“margin-left:4px;color:’+(hit?”#22C55E”:kout?”#F59E0B”:”#EF4444”)+’;font-weight:800”>’+outcome.slice(0,8)+’</span>’:””;
+return’<button onclick=“S.abIdx=’+i+’;S.pitchStep=null;render()” style=“padding:5px 10px;border-radius:16px;border:2px solid ‘+(safeIdx===i?a:“transparent”)+’;font-size:11px;font-weight:700;background:’+(safeIdx===i?t.bg2:t.bg)+’;color:’+(safeIdx===i?t.text:t.text3)+’”>AB’+(i+1)+’·Inn’+a2.inning+badge+’</button>’;
+}).join(””);
+
+var logRows=ab.pitches.length===0
+?’<div style="color:'+t.text3+';font-size:11px;text-align:center;padding:5px">No pitches</div>’
+:ab.pitches.map(function(p,i){
+var pt=null;for(var j=0;j<PT.length;j++)if(PT[j].id===p.pitchType){pt=PT[j];break;}
+var hit=isHit(p.result,p.abOutcome),k2=isK(p.result);
+var rc=p.result===“Ball”?t.text3:hit?”#22C55E”:k2?”#F59E0B”:”#EF4444”;
+return’<div style="display:flex;gap:5px;align-items:center;padding:3px 0;border-bottom:1px solid '+t.border+';font-size:11px">’
++’<span style=“background:’+(pt?pt.color+“33”:”#33333333”)+’;color:’+(pt?pt.color:”#888”)+’;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:9px;flex-shrink:0”>’+(i+1)+’</span>’
++’<span style=“color:’+(pt?pt.color:”#888”)+’;font-weight:600;min-width:58px”>’+(pt?pt.label:””)+’</span>’
++’<span style="color:'+rc+';flex:1">’+(p.abOutcome||p.result)+’</span>’
++(p.contact?’<span style="color:'+t.text3+';font-size:9px">’+p.contact+’</span>’:””)
++’</div>’;
+}).join(””);
+
+var allNotes=[];
+batter.atBats.forEach(function(a2,i){a2.notes.forEach(function(n){allNotes.push({text:n,ab:i+1,inn:a2.inning});});});
+var noteRows=allNotes.map(function(n){return’<div style="color:'+t.text2+';font-size:11px;margin-bottom:2px"><span style="color:'+t.text3+';font-size:10px">AB’+n.ab+’ Inn’+n.inn+’: </span>’+n.text+’</div>’;}).join(””);
+
+var isLocOrSpray=S.pitchStep===“location”||S.pitchStep===“spray”;
+var zoneHtml=””,sprayHtml=””;
+
+if(S.pitchStep===“location”){
+// Show interactive zone full width for placing pitch
+zoneHtml=buildZone(ab.pitches,“entry”,inLbl,awayLbl);
+sprayHtml=””;
+} else if(S.pitchStep===“spray”){
+// Show interactive spray chart full width
+zoneHtml=buildSpray(ab.pitches.filter(function(p){return p.fieldLocation;}),true);
+sprayHtml=””;
+} else {
+zoneHtml=buildZone(ab.pitches,null,inLbl,awayLbl);
+sprayHtml=buildSpray(ab.pitches.filter(function(p){return p.fieldLocation;}),false);
+}
+
+var showControls=S.pitchStep&&!isLocOrSpray;
+var showLogBtn=!S.pitchStep;
+
+return’<div style="display:flex;flex-direction:column;gap:8px">’
++’<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">’+abTabs
++’<div style="display:flex;gap:5px;align-items:center;margin-left:auto">’
++’<button onclick=“toggleLefty(’+batter.id+’)” style=“background:’+(isLefty?”#7C3AED”:”#1D4ED8”)+’;border:none;color:white;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:800”>’+(isLefty?“LHB”:“RHB”)+’</button>’
++(ab.pitches.length>0&&!S.pitchStep?’<button onclick="undoHitter('+batter.id+','+safeIdx+')" style="background:'+t.bg2+';border:none;color:#F59E0B;border-radius:8px;padding:5px 10px;font-size:11px;font-weight:700">↩</button>’:””)
++’<select id="new-ab-inn" style="background:'+t.bg2+';border:1px solid '+t.border+';color:'+t.text+';border-radius:6px;padding:4px 6px;font-size:11px">’+innSel+’</select>’
++’<button onclick="doNewAB('+batter.id+','+batter.atBats.length+')" style="background:'+a+';border:none;color:white;border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700">+ New AB</button>’
++’</div></div>’
++(isLocOrSpray
+?(S.pitchStep===“location”
+?’<div><div style=“color:’+(sel?sel.color:”#F59E0B”)+’;font-weight:700;font-size:13px;margin-bottom:6px”>● ‘+(sel?sel.label:””)+’ — tap to place</div>’+zoneHtml+’</div>’
+:’<div><div style="color:'+t.text2+';font-weight:700;font-size:13px;margin-bottom:6px">Tap where it was hit</div>’+zoneHtml+’</div>’)
+:’<div class="g2"><div><div style="color:'+t.text3+';font-size:10px;margin-bottom:3px">PITCH LOCATIONS</div>’+zoneHtml+’</div><div><div style="color:'+t.text3+';font-size:10px;margin-bottom:3px">SPRAY ● hit ✕ out</div>’+sprayHtml+’</div></div>’)
++(showControls?pitchControls(false,inLbl,awayLbl):””)
++(showLogBtn?’<button onclick="startEntry()" style="background:'+a+';border:none;color:white;border-radius:10px;padding:13px;font-size:15px;font-weight:800;width:100%">+ Log Pitch</button>’:””)
++’<div style="background:'+t.bg2+';border-radius:8px;padding:8px;max-height:100px;overflow-y:auto">’+logRows+’</div>’
++’<div style="background:'+t.bg2+';border-radius:8px;padding:10px">’
++’<div style="color:'+t.text3+';font-size:10px;margin-bottom:4px">NOTES</div>’+noteRows
++’<div style="display:flex;gap:8px;margin-top:6px">’
++’<input id="hn-inp" placeholder="Add note..." style="flex:1;background:'+t.bg+';border:1px solid '+t.border+';color:'+t.text+';border-radius:6px;padding:7px 10px;font-size:12px"/>’
++’<button onclick="var v=document.getElementById(\'hn-inp\').value.trim();if(v){addNoteToHitter(\''+batter.id+'\','+safeIdx+',v);document.getElementById(\'hn-inp\').value=\'\';}" style="background:#334155;border:none;color:#E2E8F0;border-radius:6px;padding:7px 12px;font-weight:700;font-size:12px">Add</button>’
++’</div></div></div>’;
+}
+
+// ─── PITCHER VIEW ─────────────────────────────────────────────────────────────
+function buildPitcherView(pitcher){
+var t=T(),a=accent();
+var innings=pitcher.innings||{},inn=S.pitcherInning||1;
+var innP=innings[inn]||[];
+var allP=[];Object.keys(innings).forEach(function(k){allP=allP.concat(innings[k]||[]);});
+var used=Object.keys(innings).map(Number).filter(function(n){return innings[n]&&innings[n].length>0;}).sort(function(a,b){return a-b;});
+var displayP=pitcher.bullpen?allP:innP;
+
+var innBtns=INNINGS.map(function(i){
+var active=inn===i,has=used.indexOf(i)>=0;
+return’<button onclick=“S.pitcherInning='’+i+’';render()” style=“padding:5px 10px;border-radius:14px;border:none;font-size:11px;font-weight:700;background:’+(active?a:has?t.bg2:t.bg)+’;color:’+(active?“white”:has?t.text2:t.text3)+’”>’+i+(has?’ (’+innings[i].length+’)’:””)+’</button>’;
+}).join(””);
+
+var tabs=[“chart”,“stats”,“log”,“notes”],tabLabels=[“📍 Chart”,“📊 Stats”,“📋 Log”,“📝 Notes”];
+var tabBar=’<div style="display:flex;background:'+t.bg+';border-radius:8px;padding:3px;gap:2px">’
++tabs.map(function(tb,i){return’<button onclick=“S.pitcherTab='’+tb+’';render()” style=“flex:1;padding:7px 4px;border-radius:6px;border:none;font-size:11px;font-weight:600;background:’+(S.pitcherTab===tb?t.bg2:“transparent”)+’;color:’+(S.pitcherTab===tb?t.text:t.text3)+’”>’+tabLabels[i]+’</button>’;}).join(””)
++’</div>’;
+
+var tabContent=””;
+if(S.pitcherTab===“chart”){
+var legend=PT.filter(function(pt){return displayP.some(function(p){return p.pitchType===pt.id;});}).map(function(pt){return’<div style="display:flex;align-items:center;gap:4px"><div style="width:10px;height:10px;border-radius:50%;background:'+pt.color+'"></div><span style="color:'+t.text3+';font-size:11px">’+pt.label+’</span></div>’;}).join(””);
+tabContent=’<div><div style="color:'+t.text3+';font-size:10px;margin-bottom:3px">’+(pitcher.bullpen?“ALL”:“INN “+inn)+’</div>’+buildZone(displayP)+’<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">’+legend+’</div></div>’;
+}else if(S.pitcherTab===“stats”){
+var total=allP.length;
+if(!total){tabContent=’<div style="color:'+t.text3+';text-align:center;padding:20px;font-size:13px">No pitches yet</div>’;}
+else{
+var mix=PT.map(function(pt){return{pt:pt,n:allP.filter(function(p){return p.pitchType===pt.id;}).length};}).filter(function(x){return x.n>0;});
+tabContent=’<div style="display:flex;flex-direction:column;gap:10px"><div style="color:'+t.text3+';font-size:10px">PITCH MIX — ‘+total+’ pitches</div>’
++mix.map(function(x){return’<div><div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="color:'+x.pt.color+';font-size:12px;font-weight:700">’+x.pt.label+’</span><span style="color:'+t.text3+';font-size:12px">’+x.n+’ (’+Math.round(x.n/total*100)+’%)</span></div><div style="background:'+t.bg3+';border-radius:4px;height:7px"><div style="background:'+x.pt.color+';border-radius:4px;height:7px;width:'+Math.round(x.n/total*100)+'%"></div></div></div>’;}).join(””)+’</div>’;
+}
+}else if(S.pitcherTab===“log”){
+var rows=innP.length===0?’<div style="color:'+t.text3+';font-size:12px;text-align:center;padding:16px">No pitches this inning</div>’
+:innP.map(function(p,i){
+var pt=null;for(var j=0;j<PT.length;j++)if(PT[j].id===p.pitchType){pt=PT[j];break;}
+var rc=p.result===“Ball”?”#22C55E”:p.result&&p.result.indexOf(“Hit”)>=0?”#10B981”:”#EF4444”;
+return’<div style="display:flex;gap:7px;align-items:center;padding:5px 0;border-bottom:1px solid '+t.border+';font-size:12px">’
++’<span style=“background:’+(pt?pt.color+“33”:”#33333333”)+’;color:’+(pt?pt.color:”#888”)+’;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:11px;flex-shrink:0”>’+(i+1)+’</span>’
++’<span style=“color:’+(pt?pt.color:”#888”)+’;font-weight:600;min-width:60px”>’+(pt?pt.label:””)+’</span>’
++’<span style="color:'+rc+';flex:1">’+p.result+’</span></div>’;
+}).join(””);
+tabContent=’<div style="background:'+t.bg+';border-radius:8px;padding:10px;max-height:280px;overflow-y:auto">’+rows+’</div>’;
+}else{
+var noteRows2=(pitcher.notes||[]).map(function(n){return’<div style="color:'+t.text2+';font-size:13px;margin-bottom:4px">• ‘+n+’</div>’;}).join(””);
+tabContent=’<div style="background:'+t.bg+';border-radius:8px;padding:10px">’
++(!(pitcher.notes&&pitcher.notes.length)?’<div style="color:'+t.text3+';font-size:12px;margin-bottom:8px">No notes yet</div>’:””)
++noteRows2
++’<div style="display:flex;gap:8px;margin-top:8px">’
++’<input id="pn-inp" placeholder="Add note..." style="flex:1;background:'+t.bg2+';border:1px solid '+t.border+';color:'+t.text+';border-radius:6px;padding:8px 10px;font-size:13px"/>’
++’<button onclick="var v=document.getElementById(\'pn-inp\').value.trim();if(v){addNoteToPitcher(\''+pitcher.id+'\',v);document.getElementById(\'pn-inp\').value=\'\';}" style="background:#334155;border:none;color:#E2E8F0;border-radius:6px;padding:8px 13px;font-weight:700">Add</button>’
++’</div></div>’;
+}
+
+var isLoc=S.pitchStep===“location”;
+return’<div style="display:flex;flex-direction:column;gap:8px">’
++’<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">’
++’<div style="font-size:18px;font-weight:800;color:'+t.text+'">’+pitcher.name+’</div>’
++(pitcher.bullpen?’<span style="background:#78350F;color:#FDE68A;border-radius:6px;padding:2px 8px;font-size:11px">BULLPEN</span>’:””)
++’<div style="color:'+t.text3+';font-size:12px">’+allP.length+’ pitches</div>’
++(innP.length>0&&!S.pitchStep?’<button onclick=“undoPitcher('’+pitcher.id+’',’+(pitcher.bullpen?”'BP'”:inn)+’)” style=“background:’+t.bg2+’;border:none;color:#F59E0B;border-radius:8px;padding:5px 12px;font-size:12px;font-weight:700;margin-left:auto”>↩</button>’:””)
++’</div>’
++(!pitcher.bullpen?’<div><div style="color:'+t.text3+';font-size:10px;margin-bottom:4px">INNING</div><div style="display:flex;gap:5px;flex-wrap:wrap">’+innBtns+’</div></div>’:””)
++(isLoc?pitchControls(true):tabBar+tabContent)
++(S.pitchStep&&!isLoc?pitchControls(true):””)
++(!S.pitchStep?’<button onclick="startEntry()" style="background:'+a+';border:none;color:white;border-radius:10px;padding:13px;font-size:15px;font-weight:800;width:100%">+ Log Pitch’+((!pitcher.bullpen)?’ — Inn ‘+inn:””)+’</button>’:””)
++’</div>’;
+}
+
+// ─── SIDEBAR ──────────────────────────────────────────────────────────────────
+function buildSidebar(){
+var t=T(),a=accent(),isPitch=S.sub===“pitchers”,isOur=S.side===“our”;
+var label=(isOur?“Our”:“Their”)+” “+(isPitch?“Pitchers”:“Hitters”);
+var content=””;
+
+if(isPitch){
+var list=getList(),selId=S.selPitcher[S.side];
+var rows=list.map(function(p){
+if(S.editingId===p.id)return’<div style="display:flex;gap:5px;margin-bottom:5px;align-items:center">’
++’<input id="edit-inp" value="'+p.name+'" style="flex:1;background:'+t.bg+';border:1px solid #1D4ED8;color:'+t.text+';border-radius:8px;padding:9px 10px;font-size:13px" onkeydown="if(event.key===\'Enter\')saveEditName()"/>’
++’<button onclick="saveEditName()" style="background:#1D4ED8;border:none;color:white;border-radius:6px;padding:8px 12px;font-size:12px;font-weight:700">Save</button>’
++’<button onclick="S.editingId=null;render()" style="background:'+t.bg3+';border:none;color:'+t.text3+';border-radius:6px;padding:8px;font-size:12px">✕</button>’
++’</div>’;
+var pc=Object.values(p.innings||{}).reduce(function(a,b){return a+b.length;},0);
+return’<div style="display:flex;gap:5px;margin-bottom:5px;align-items:center">’
++’<button onclick="setSelId('+p.id+');S.sidebarOpen=false;render()" style="flex:1;background:'+(selId===p.id?a:t.bg)+';border:none;color:'+t.text+';border-radius:8px;padding:11px 12px;text-align:left;font-size:13px">’
++p.name+(p.bullpen?’<span style="color:#F59E0B;font-size:10px;margin-left:6px">[BP]</span>’:””)
++’<span style="color:'+t.text3+';font-size:10px;margin-left:6px">’+pc+‘p</span></button>’
++’<button onclick="editName('+p.id+')" style="background:'+t.bg3+';border:none;color:'+t.text3+';border-radius:6px;padding:8px;font-size:11px">✎</button>’
++’</div>’;
+}).join(””);
+content=rows
++’<div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px">’
++’<input type=“checkbox” id=“bp-chk” ‘+(S.isBullpen?“checked”:””)+” onchange="S.isBullpen=this.checked"/>”
++’<label for="bp-chk" style="color:'+t.text3+';font-size:12px">Bullpen session</label></div>’
++’<div style="display:flex;gap:6px;margin-top:8px">’
++’<input id="ap-inp" placeholder="Add Pitcher..." style="flex:1;background:'+t.bg+';border:1px solid '+t.border+';color:'+t.text+';border-radius:6px;padding:8px 10px;font-size:13px"/>’
++’<button onclick="var v=document.getElementById(\'ap-inp\').value.trim();if(v)addPerson(v);" style="background:'+a+';border:none;color:white;border-radius:6px;padding:8px 13px;font-weight:800;font-size:16px">+</button>’
++’</div>’;
+}else{
+var order=getLineup(),list2=getList(S.side,“hitters”),selId2=S.selBatter[S.side];
+var lineupRows=order.map(function(id,i){
+var p=null;for(var j=0;j<list2.length;j++)if(list2[j].id===id){p=list2[j];break;}
+if(!p)return””;
+var pc2=p.atBats?p.atBats.reduce(function(a,b){return a+b.pitches.length;},0):0;
+var isSelected=selId2===id,isSubbed=!!p.removedBy,isPH=!!p.subFor;
+
+```
+  if(S.editingId===id)return'<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
+    +'<span style="color:'+t.text3+';font-size:12px;font-weight:700;min-width:18px;text-align:right">'+(i+1)+'</span>'
+    +'<input id="edit-inp" value="'+p.name+'" style="flex:1;background:'+t.bg+';border:1px solid #1D4ED8;color:'+t.text+';border-radius:8px;padding:8px 10px;font-size:13px" onkeydown="if(event.key===\'Enter\')saveEditName()"/>'
+    +'<button onclick="saveEditName()" style="background:#1D4ED8;border:none;color:white;border-radius:6px;padding:8px 12px;font-size:12px;font-weight:700">Save</button>'
+    +'<button onclick="S.editingId=null;render()" style="background:'+t.bg3+';border:none;color:'+t.text3+';border-radius:6px;padding:8px;font-size:12px">✕</button>'
+    +'</div>';
+
+  return'<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;opacity:'+(isSubbed?.4:1)+';">'
+    +'<span style="color:'+t.text3+';font-size:12px;font-weight:700;min-width:18px;text-align:right">'+(i+1)+'</span>'
+    +'<div style="display:flex;flex-direction:column;gap:2px">'
+    +'<button onclick="moveUp('+id+')" style="background:'+t.bg2+';border:none;color:'+t.text3+';border-radius:4px;padding:1px 6px;font-size:10px">▲</button>'
+    +'<button onclick="moveDown('+id+')" style="background:'+t.bg2+';border:none;color:'+t.text3+';border-radius:4px;padding:1px 6px;font-size:10px">▼</button>'
+    +'</div>'
+    +'<button onclick="setSelId('+id+');S.sidebarOpen=false;S.abIdx=Math.max(0,'+(p.atBats?p.atBats.length-1:0)+');render()" style="flex:1;background:'+(isSelected?a:t.bg)+';border:none;color:'+t.text+';border-radius:8px;padding:9px 10px;text-align:left;font-size:13px;font-weight:'+(isSelected?700:400)+';">'
+    +p.name+(isPH?'<span style="color:#F59E0B;font-size:10px;margin-left:4px">PH for '+p.subFor+'</span>':"")
+    +(isSubbed?'<span style="color:#EF4444;font-size:10px;margin-left:4px">OUT</span>':"")
+    +'<span style="color:'+t.text3+';font-size:10px;margin-left:4px">'+pc2+'p</span></button>'
+    +(!isSubbed?'<button onclick="S.subModal={forId:'+id+',subName:\'\',subType:\'stays\',inning:1};render()" style="background:'+t.bg3+';border:none;color:'+t.text3+';border-radius:6px;padding:8px;font-size:11px;font-weight:700">Sub</button>':"")
+    +'<button onclick="editName('+id+')" style="background:'+t.bg2+';border:none;color:'+t.text3+';border-radius:6px;padding:8px;font-size:11px">✎</button>'
+    +'</div>';
+}).join("");
+content='<div style="color:'+t.text3+';font-size:10px;margin-bottom:8px">BATTING ORDER</div>'
+  +(!order.length?'<div style="color:'+t.text3+';font-size:12px;margin-bottom:10px">Add batters below</div>':"")
+  +lineupRows
+  +'<div style="display:flex;gap:6px;margin-top:10px">'
+  +'<input id="ap-inp" placeholder="Add Batter..." style="flex:1;background:'+t.bg+';border:1px solid '+t.border+';color:'+t.text+';border-radius:6px;padding:8px 10px;font-size:13px"/>'
+  +'<button onclick="var v=document.getElementById(\'ap-inp\').value.trim();if(v)addPerson(v);" style="background:'+a+';border:none;color:white;border-radius:6px;padding:8px 13px;font-weight:800;font-size:16px">+</button>'
+  +'</div>';
+```
+
+}
+
+var subMod=S.subModal?buildSubModal():””;
+return’<div class="overlay"><div class="overlay-bg" onclick="S.sidebarOpen=false;render()"></div>’
++’<div class="sidebar" style="background:'+t.bg2+'">’
++’<div style="display:flex;justify-content:space-between;margin-bottom:14px">’
++’<div style="font-weight:700;font-size:15px;color:'+t.text+'">’+label+’</div>’
++’<button onclick="S.sidebarOpen=false;render()" style="background:none;border:none;color:'+t.text3+';font-size:20px">✕</button>’
++’</div>’+content+’</div>’+subMod+’</div>’;
+}
+
+function buildSubModal(){
+var m=S.subModal,t=T();
+var list=getList(S.side,“hitters”),forB=null;
+for(var i=0;i<list.length;i++)if(list[i].id===m.forId){forB=list[i];break;}
+var innSel=INNINGS.map(function(i){return’<option value="'+i+'">’+(i===“EXT”?“Extra”:“Inning “+i)+’</option>’;}).join(””);
+return’<div class="modal"><div style="background:'+t.bg2+';border-radius:14px;padding:20px;width:100%;max-width:400px;display:flex;flex-direction:column;gap:12px">’
++’<div style="font-weight:700;font-size:16px;color:'+t.text+'">Substitution</div>’
++’<div style="color:'+t.text3+';font-size:13px">Replacing: <span style="color:'+t.text+';font-weight:700">’+(forB?forB.name:””)+’</span></div>’
++’<input id="sub-name" placeholder="Sub player name..." oninput="S.subModal.subName=this.value" style="background:'+t.bg+';border:1px solid '+t.border+';color:'+t.text+';border-radius:8px;padding:10px 12px;font-size:15px"/>’
++’<div style="color:'+t.text3+';font-size:11px">INNING</div>’
++’<select onchange="S.subModal.inning=this.value" style="background:'+t.bg+';border:1px solid '+t.border+';color:'+t.text+';border-radius:8px;padding:10px 12px;font-size:14px">’+innSel+’</select>’
++’<div style="color:'+t.text3+';font-size:11px">SUB TYPE</div>’
++’<div style="display:flex;gap:8px">’
++’<button onclick=“S.subModal.subType='stays';render()” style=“flex:1;padding:12px;border-radius:8px;font-size:13px;font-weight:700;border:2px solid ‘+(m.subType===“stays”?”#22C55E”:t.border)+’;background:’+(m.subType===“stays”?”#14532D22”:t.bg)+’;color:’+(m.subType===“stays”?”#22C55E”:t.text3)+’”>Stays In</button>’
++’<button onclick=“S.subModal.subType='onetime';render()” style=“flex:1;padding:12px;border-radius:8px;font-size:13px;font-weight:700;border:2px solid ‘+(m.subType===“onetime”?”#F59E0B”:t.border)+’;background:’+(m.subType===“onetime”?”#78350F22”:t.bg)+’;color:’+(m.subType===“onetime”?”#F59E0B”:t.text3)+’”>Pinch Hit</button>’
++’</div>’
++’<div style="display:flex;gap:8px;margin-top:4px">’
++’<button onclick="S.subModal=null;render()" style="flex:1;background:'+t.bg3+';border:none;color:'+t.text3+';border-radius:8px;padding:12px;font-size:14px">Cancel</button>’
++’<button onclick="confirmSub()" style="flex:1;background:#1D4ED8;border:none;color:white;border-radius:8px;padding:12px;font-size:14px;font-weight:700">Confirm</button>’
++’</div></div></div>’;
+}
+
+// ─── REPORT ───────────────────────────────────────────────────────────────────
+function buildBatterCard(batter,color){
+var t=T();
+var allInPlay=[],allPitches=[];
+batter.atBats.forEach(function(ab){allPitches=allPitches.concat(ab.pitches);ab.pitches.forEach(function(p){if(p.fieldLocation)allInPlay.push(p);});});
+var abBadges=batter.atBats.map(function(ab,i){
+var last=ab.pitches[ab.pitches.length-1];
+var outcome=last?(last.abOutcome||(isK(last.result)?(last.result===“Strike (Looking)”?“Kl”:“K”):last.result)||”—”):”—”;
+var hit=last&&isHit(last.result,last.abOutcome);
+return’<div style=“background:’+t.bg3+’;border-radius:6px;padding:3px 8px;font-size:11px;border:1px solid ‘+(hit?”#22C55E44”:”#EF444444”)+’”>’
++’<span style="color:'+t.text3+'">AB’+(i+1)+’ Inn’+ab.inning+’ </span>’
++’<span style=“color:’+(hit?”#22C55E”:”#EF4444”)+’;font-weight:700”>’+outcome+’</span>’
++(last?’<span style="color:'+t.text3+';font-size:10px"> on ‘+ptL(last.pitchType)+’</span>’:””)
++’</div>’;
+}).join(””);
+var abRows=batter.atBats.map(function(ab,i){
+if(!ab.pitches.length)return””;
+var last=ab.pitches[ab.pitches.length-1];
+var outcome=last?(last.abOutcome||(isK(last.result)?(last.result===“Strike (Looking)”?“Kl”:“K”):last.result)||”—”):”—”;
+var hit=last&&isHit(last.result,last.abOutcome);
+var spans=ab.pitches.map(function(p,j){
+var pt=null;for(var k=0;k<PT.length;k++)if(PT[k].id===p.pitchType){pt=PT[k];break;}
+var isLast=j===ab.pitches.length-1,isH=isHit(p.result,p.abOutcome);
+var rc=p.result===“Ball”?t.text3:isH?”#22C55E”:isK(p.result)?”#F59E0B”:”#EF4444”;
+return’<span style=“background:’+(pt?pt.color+“22”:”#33333322”)+’;border:1px solid ‘+(isLast?rc:(pt?pt.color+“44”:”#444”))+’;color:’+(pt?pt.color:”#888”)+’;border-radius:4px;padding:2px 5px;font-size:10px;font-weight:’+(isLast?800:400)+’;”>’+(j+1)+’.’+(pt?pt.id:”?”)+(isLast?’ → ‘+(p.abOutcome||p.result):””)+’</span>’;
+}).join(””);
+return’<div style="background:'+t.bg3+';border-radius:6px;padding:6px 10px;margin-bottom:4px;font-size:11px">’
++’<div style="display:flex;gap:6px;align-items:center;margin-bottom:3px">’
++’<span style="color:'+t.text3+'">AB’+(i+1)+’ · Inn’+ab.inning+’</span>’
++’<span style=“color:’+(hit?”#22C55E”:”#EF4444”)+’;font-weight:700”>’+outcome+’</span>’
++(last&&last.contact?’<span style="color:'+t.text3+'">· ‘+last.contact+’</span>’:””)
++’</div><div style="display:flex;gap:3px;flex-wrap:wrap">’+spans+’</div></div>’;
+}).join(””);
+var legend=PT.filter(function(pt){return allPitches.some(function(p){return p.pitchType===pt.id;});}).map(function(pt){return’<div style="display:flex;align-items:center;gap:3px"><div style="width:8px;height:8px;border-radius:50%;background:'+pt.color+'"></div><span style="color:'+t.text3+';font-size:10px">’+pt.label+’</span></div>’;}).join(””);
+var notes=[];batter.atBats.forEach(function(ab,i){ab.notes.forEach(function(n){notes.push(’<div style="color:'+t.text3+';font-size:11px;margin-top:2px">📝 AB’+(i+1)+’ Inn’+ab.inning+’: ‘+n+’</div>’);});});
+return’<div style="background:'+t.bg+';border-radius:10px;padding:12px;margin-bottom:10px;border:1px solid '+color+'44">’
++’<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">’
++’<div style="color:'+t.text+';font-weight:800;font-size:14px">’+batter.name+’</div>’+abBadges+’</div>’
++’<div class="g2" style="margin-bottom:8px">’
++’<div><div style="color:'+t.text3+';font-size:9px;margin-bottom:2px">PITCHES SEEN</div>’+buildZone(allPitches)+’</div>’
++’<div><div style="color:'+t.text3+';font-size:9px;margin-bottom:2px">SPRAY ● hit ✕ out</div>’+buildSpray(allInPlay,false)+’</div>’
++’</div>’
++’<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px">’+legend+’</div>’
++abRows+notes.join(””)+’</div>’;
+}
+
+function buildPitcherCard(pitcher,color){
+var t=T(),allP=[];
+Object.keys(pitcher.innings||{}).forEach(function(k){allP=allP.concat(pitcher.innings[k]||[]);});
+var total=allP.length;
+var mix=PT.map(function(pt){return{pt:pt,n:allP.filter(function(p){return p.pitchType===pt.id;}).length};}).filter(function(x){return x.n>0;});
+var innRows=Object.keys(pitcher.innings||{}).sort(function(a,b){return Number(a)-Number(b);}).map(function(k){
+var ps=pitcher.innings[k]||[];
+var dots=ps.map(function(p,j){var pt=null;for(var i=0;i<PT.length;i++)if(PT[i].id===p.pitchType){pt=PT[i];break;}return’<span style=“background:’+(pt?pt.color+“22”:”#33333322”)+’;color:’+(pt?pt.color:”#888”)+’;border-radius:3px;padding:1px 4px;font-size:10px”>’+(j+1)+’.’+(pt?pt.id:”?”)+’</span>’;}).join(””);
+return’<div style="background:'+t.bg3+';border-radius:6px;padding:6px 10px;margin-bottom:4px;font-size:11px"><span style="color:'+t.text3+'">Inn ‘+k+’:</span><span style="color:'+t.text3+';margin-left:6px">’+ps.length+’ pitches</span><div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:3px">’+dots+’</div></div>’;
+}).join(””);
+var notes=(pitcher.notes||[]).map(function(n){return’<div style="color:'+t.text3+';font-size:11px;margin-top:2px">📝 ‘+n+’</div>’;}).join(””);
+return’<div style="background:'+t.bg+';border-radius:10px;padding:12px;margin-bottom:10px;border:1px solid '+color+'44">’
++’<div style="color:'+t.text+';font-weight:800;font-size:14px;margin-bottom:8px">’+pitcher.name+’ <span style="color:'+t.text3+';font-size:12px;font-weight:400">’+total+’ pitches</span></div>’
++mix.map(function(x){return’<div style="margin-bottom:6px"><div style="display:flex;justify-content:space-between;margin-bottom:2px"><span style="color:'+x.pt.color+';font-size:11px;font-weight:600">’+x.pt.label+’</span><span style="color:'+t.text3+';font-size:11px">’+x.n+’ (’+(total?Math.round(x.n/total*100):0)+’%)</span></div><div style="background:'+t.bg3+';border-radius:3px;height:5px"><div style="background:'+x.pt.color+';border-radius:3px;height:5px;width:'+(total?Math.round(x.n/total*100):0)+'%"></div></div></div>’;}).join(””)
++innRows+notes+’</div>’;
+}
+
+function buildReport(g){
+var t=T(),rv=S.reportView||“ourHit”;
+var tabDefs=[[“ourHit”,“🏠 Our Hitters”,”#1D4ED8”],[“theirHit”,“👁 Their Hitters”,”#7C3AED”],[“ourPitch”,“⚾ Our Pitchers”,”#065F46”],[“theirPitch”,“🔍 Their Pitchers”,”#92400E”],[“ai”,“✦ AI Report”,”#6D28D9”]];
+var tabBar=’<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">’
++tabDefs.map(function(td){return’<button onclick=“S.reportView='’+td[0]+’';render()” style=“flex:1;min-width:70px;padding:10px 4px;border-radius:8px;border:none;font-size:11px;font-weight:700;background:’+(rv===td[0]?td[2]:t.bg)+’;color:’+(rv===td[0]?“white”:t.text3)+’”>’+td[1]+’</button>’;}).join(””)+’</div>’;
+
+var content=””;
+if(rv===“ourHit”){var cards=(g.ourHitters||[]).map(function(b){return buildBatterCard(b,”#1D4ED8”);}).join(””);content=’<button onclick="doPrintVisual()" style="width:100%;background:#065F46;border:none;color:white;border-radius:8px;padding:10px;font-size:13px;font-weight:700;margin-bottom:10px">🖨 Save as PDF</button>’+((g.ourHitters||[]).length===0?’<div style="color:'+t.text3+';text-align:center;padding:20px">None charted</div>’:cards);}
+else if(rv===“theirHit”){var cards2=(g.theirHitters||[]).map(function(b){return buildBatterCard(b,”#7C3AED”);}).join(””);content=’<button onclick="doPrintVisual()" style="width:100%;background:#065F46;border:none;color:white;border-radius:8px;padding:10px;font-size:13px;font-weight:700;margin-bottom:10px">🖨 Save as PDF</button>’+((g.theirHitters||[]).length===0?’<div style="color:'+t.text3+';text-align:center;padding:20px">None charted</div>’:cards2);}
+else if(rv===“ourPitch”){var cards3=(g.ourPitchers||[]).map(function(p){return buildPitcherCard(p,”#065F46”);}).join(””);content=’<button onclick="doPrintVisual()" style="width:100%;background:#065F46;border:none;color:white;border-radius:8px;padding:10px;font-size:13px;font-weight:700;margin-bottom:10px">🖨 Save as PDF</button>’+((g.ourPitchers||[]).length===0?’<div style="color:'+t.text3+';text-align:center;padding:20px">None charted</div>’:cards3);}
+else if(rv===“theirPitch”){var cards4=(g.theirPitchers||[]).map(function(p){return buildPitcherCard(p,”#92400E”);}).join(””);content=’<button onclick="doPrintVisual()" style="width:100%;background:#065F46;border:none;color:white;border-radius:8px;padding:10px;font-size:13px;font-weight:700;margin-bottom:10px">🖨 Save as PDF</button>’+((g.theirPitchers||[]).length===0?’<div style="color:'+t.text3+';text-align:center;padding:20px">None charted</div>’:cards4);}
+else if(rv===“ai”){
+if(!S.reportDone){
+content=’<button onclick=“doGenerate()” ‘+(S.reportLoading?“disabled”:””)+’ style=“width:100%;background:#7C3AED;border:none;color:white;border-radius:10px;padding:16px;font-size:16px;font-weight:700;opacity:’+(S.reportLoading?.6:1)+’”>’+(S.reportLoading?“⏳ Generating — please wait…”:“✦ Generate AI Scouting Report”)+’</button>’+(S.reportLoading?’<div style="color:'+t.text3+';font-size:12px;text-align:center;margin-top:10px">Takes about 15 seconds…</div>’:””);
+}else{
+content=’<div style="display:flex;gap:8px;margin-bottom:10px"><button onclick="doGenerate()" style="background:'+t.bg3+';border:none;color:'+t.text3+';border-radius:8px;padding:8px 14px;font-size:12px">↻ Regenerate</button><button onclick="doPrintAI()" style="flex:1;background:#065F46;border:none;color:white;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:700">🖨 Save AI as PDF</button></div>’
++’<textarea oninput="S.reportText=this.value" style="width:100%;min-height:320px;background:'+t.bg+';border:1px solid '+t.border+';color:'+t.text+';border-radius:8px;padding:14px;font-size:13px;line-height:1.8;resize:vertical;font-family:Georgia,serif">’+S.reportText+’</textarea>’;
+}
+}
+return’<div class="modal"><div class="modal-box" style="background:'+t.bg2+'">’
++’<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">’
++’<div style="color:'+t.text+';font-size:15px;font-weight:700">📄 vs ‘+g.opponent+’ · ‘+g.date+’</div>’
++’<button onclick="S.showReport=false;S.histGame=null;render()" style="background:none;border:none;color:'+t.text3+';font-size:22px">✕</button>’
++’</div>’+tabBar
++’<div style="flex:1;overflow-y:auto">’+content+’</div>’
++’</div></div>’;
+}
+
+function doPrintVisual(){
+var g=S.histGame||S.game;if(!g)return;
+var rv=S.reportView;
+var map={“ourHit”:{list:g.ourHitters||[],type:“h”,label:“Our Hitters”},“theirHit”:{list:g.theirHitters||[],type:“h”,label:“Their Hitters”},“ourPitch”:{list:g.ourPitchers||[],type:“p”,label:“Our Pitchers”},“theirPitch”:{list:g.theirPitchers||[],type:“p”,label:“Their Pitchers”}};
+var sec=map[rv];if(!sec)return;
+var html=’<h1 style="font-size:20px;margin-bottom:4px">’+sec.label+’ — vs ‘+g.opponent+’</h1><p style="color:#666;font-size:13px;margin-bottom:16px">’+g.date+’</p>’;
+if(sec.type===“h”){
+sec.list.forEach(function(batter){
+html+=’<div style="border:1px solid #ccc;border-radius:6px;padding:12px;margin-bottom:14px;page-break-inside:avoid"><h2 style="font-size:15px;margin:0 0 6px">’+batter.name+’</h2>’;
+batter.atBats.forEach(function(ab,i){
+if(!ab.pitches.length)return;
+var last=ab.pitches[ab.pitches.length-1];
+var outcome=last?(last.abOutcome||(isK(last.result)?(last.result===“Strike (Looking)”?“Kl”:“K”):last.result)||”—”):”—”;
+var hit=last&&isHit(last.result,last.abOutcome);
+html+=’<div style="background:#f8f8f8;border-radius:4px;padding:8px;margin-bottom:6px;font-size:12px"><strong>AB’+(i+1)+’ · Inn’+ab.inning+’</strong> — <span style=“color:’+(hit?“green”:“red”)+’;font-weight:bold”>’+outcome+’</span>’;
+if(last&&last.contact)html+=’ · ‘+last.contact;
+html+=’<div style="margin-top:4px">’;
+ab.pitches.forEach(function(p,j){var pt=null;for(var k=0;k<PT.length;k++)if(PT[k].id===p.pitchType){pt=PT[k];break;}var isLast=j===ab.pitches.length-1;html+=’<span style="background:#eee;border-radius:3px;padding:2px 5px;margin-right:3px;font-size:11px;font-weight:'+(isLast?700:400)+'">’+(j+1)+’.’+(pt?pt.label:p.pitchType)+(isLast?’ → ‘+(p.abOutcome||p.result):””)+’</span>’;});
+html+=’</div>’;if(ab.notes&&ab.notes.length)html+=’<div style="color:#555;font-size:11px;margin-top:3px">📝 ‘+ab.notes.join(” · “)+’</div>’;html+=’</div>’;
+});html+=’</div>’;
+});
+}else{
+sec.list.forEach(function(pitcher){
+var allP=[];Object.keys(pitcher.innings||{}).forEach(function(k){allP=allP.concat(pitcher.innings[k]||[]);});
+html+=’<div style="border:1px solid #ccc;border-radius:6px;padding:12px;margin-bottom:14px;page-break-inside:avoid"><h2 style="font-size:15px;margin:0 0 6px">’+pitcher.name+’ (’+allP.length+’ pitches)</h2>’;
+var total=allP.length;
+PT.forEach(function(pt){var n=allP.filter(function(p){return p.pitchType===pt.id;}).length;if(n)html+=’<span style="background:#eee;border-radius:3px;padding:2px 6px;margin-right:4px;font-size:11px">’+pt.label+’: ‘+n+’ (’+Math.round(n/total*100)+’%)</span>’;});
+html+=’<div style="margin-top:8px">’;
+Object.keys(pitcher.innings||{}).sort().forEach(function(k){var ps=pitcher.innings[k]||[];html+=’<div style="font-size:12px;margin-bottom:4px"><strong>Inn ‘+k+’:</strong> ‘;ps.forEach(function(p,j){var pt=null;for(var i=0;i<PT.length;i++)if(PT[i].id===p.pitchType){pt=PT[i];break;}html+=’<span style="background:#eee;border-radius:3px;padding:1px 4px;margin-right:2px;font-size:11px">’+(j+1)+’.’+(pt?pt.label:p.pitchType)+‘→’+p.result+’</span>’;});html+=’</div>’;});
+html+=’</div>’;if(pitcher.notes&&pitcher.notes.length)html+=’<div style="color:#555;font-size:11px;margin-top:4px">📝 ‘+pitcher.notes.join(” · “)+’</div>’;html+=’</div>’;
+});
+}
+var win=window.open(””,”_blank”);
+win.document.write(’<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>’+sec.label+’</title><style>body{font-family:Trebuchet MS,sans-serif;padding:20px;max-width:800px;margin:0 auto;}@media print{button{display:none;}}</style></head><body>’+html+’<br/><button onclick="window.print()" style="background:#1D4ED8;color:white;border:none;border-radius:6px;padding:10px 20px;font-size:14px;cursor:pointer">🖨 Save as PDF</button></body></html>’);
+win.document.close();
+}
+function doPrintAI(){
+if(!S.reportText){alert(“Generate the AI report first.”);return;}
+var g=S.histGame||S.game;
+var esc=S.reportText.replace(/&/g,”&”).replace(/</g,”<”).replace(/>/g,”>”).replace(/\n/g,”<br/>”);
+var win=window.open(””,”_blank”);
+win.document.write(’<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>AI Scouting Report</title><style>body{font-family:Georgia,serif;padding:20px;max-width:800px;margin:0 auto;line-height:1.8;}@media print{button{display:none;}}</style></head><body><h1 style="font-size:20px;margin-bottom:4px">AI Scouting Report</h1><p style="color:#666;font-size:13px;margin-bottom:16px">vs ‘+(g?g.opponent:””)+’ · ‘+(g?g.date:””)+’</p><div>’+esc+’</div><br/><button onclick="window.print()" style="background:#065F46;color:white;border:none;border-radius:6px;padding:10px 20px;font-size:14px;cursor:pointer">🖨 Save as PDF</button></body></html>’);
+win.document.close();
+}
+function doGenerate(){
+if(S.reportLoading)return;
+var g=S.histGame||S.game;if(!g)return;
+S.reportLoading=true;S.reportDone=false;render();
+var summary={opponent:g.opponent,date:g.date,
+ourHitters:(g.ourHitters||[]).map(function(b){return{name:b.name,atBats:b.atBats.map(function(ab,i){return{ab:i+1,inning:ab.inning,pitches:ab.pitches.map(function(p){return p.pitchType+“→”+p.result+(p.abOutcome?” (”+p.abOutcome+”)”+(p.contact?” “+p.contact:””):””);}),notes:ab.notes};})};})};
+summary.theirHitters=(g.theirHitters||[]).map(function(b){return{name:b.name,atBats:b.atBats.map(function(ab,i){return{ab:i+1,inning:ab.inning,pitches:ab.pitches.map(function(p){return p.pitchType+“→”+p.result+(p.abOutcome?” (”+p.abOutcome+”)”:””);}),notes:ab.notes};})};});
+summary.ourPitchers=(g.ourPitchers||[]).map(function(p){var all=[];Object.keys(p.innings||{}).forEach(function(k){all=all.concat(p.innings[k]||[]);});return{name:p.name,totalPitches:all.length,pitchMix:PT.map(function(pt){return{type:pt.id,n:all.filter(function(x){return x.pitchType===pt.id;}).length};}).filter(function(x){return x.n>0;}),notes:p.notes};});
+summary.theirPitchers=(g.theirPitchers||[]).map(function(p){var all=[];Object.keys(p.innings||{}).forEach(function(k){all=all.concat(p.innings[k]||[]);});return{name:p.name,totalPitches:all.length,pitchMix:PT.map(function(pt){return{type:pt.id,n:all.filter(function(x){return x.pitchType===pt.id;}).length};}).filter(function(x){return x.n>0;}),notes:p.notes};});
+fetch(“https://api.anthropic.com/v1/messages”,{method:“POST”,headers:{“Content-Type”:“application/json”},
+body:JSON.stringify({model:“claude-sonnet-4-20250514”,max_tokens:1000,messages:[{role:“user”,content:“You are a high school baseball scout. Write a practical scouting report.\n\nSections:\n1. GAME OVERVIEW\n2. OUR HITTERS\n3. THEIR HITTERS + attack plan\n4. OUR PITCHERS\n5. THEIR PITCHERS\n6. KEY TAKEAWAYS\n\nUse FB/CB/SL/CH/CT/SI. Be specific.\n\nData:\n”+JSON.stringify(summary,null,2)}]})
+}).then(function(res){return res.json();}).then(function(data){
+S.reportLoading=false;S.reportDone=true;
+S.reportText=data.content&&data.content[0]?data.content[0].text:“Could not generate.”;render();
+}).catch(function(e){S.reportLoading=false;S.reportDone=true;S.reportText=“Error: “+e.message;render();});
+}
+
+// ─── SCREENS ──────────────────────────────────────────────────────────────────
+function render(){
+var t=T();
+document.body.style.background=t.bg;
+document.body.style.color=t.text;
+var html=””;
+try{
+if(S.screen===“home”)html=buildHome();
+else if(S.screen===“history”)html=buildHistory();
+else if(S.screen===“game”)html=buildGame();
+else html=’<div style="padding:20px;color:#EF4444">Unknown screen</div>’;
+}catch(e){
+html=’<div style="padding:20px;color:#EF4444;font-size:14px"><b>Error: ‘+e.message+’</b><br/><small>’+e.stack+’</small></div>’;
+}
+document.getElementById(“app”).innerHTML=html;
+}
+
+function buildHome(){
+var t=T();
+var legend=PT.map(function(pt){return’<div style="display:flex;align-items:center;gap:5px"><div style="width:11px;height:11px;border-radius:50%;background:'+pt.color+'"></div><span style="color:'+t.text2+';font-size:12px">’+pt.label+’</span></div>’;}).join(””);
+return’<div style="min-height:100vh;padding:24px;background:'+t.bg+'">’
++’<div style="max-width:520px;margin:0 auto">’
++’<div style="display:flex;justify-content:flex-end;margin-bottom:10px">’
++’<button onclick=“S.dayMode=!S.dayMode;render()” style=“background:’+(S.dayMode?”#F59E0B”:”#1E293B”)+’;border:none;color:’+(S.dayMode?”#0F172A”:”#F59E0B”)+’;border-radius:8px;padding:8px 14px;font-size:15px;font-weight:700”>’+(S.dayMode?“☀️ Day”:“🌙 Night”)+’</button>’
++’</div>’
++’<div style="text-align:center;margin-bottom:28px">’
++’<div style="font-size:40px">⚾</div>’
++’<div style="font-size:26px;font-weight:800;letter-spacing:-1px;color:#3B82F6">BaseCharter</div>’
++’<div style="color:'+t.text3+';font-size:13px">Our Team & Opponent · Hitters & Pitchers</div>’
++’</div>’
++’<div style="background:'+t.card+';border-radius:12px;padding:14px;border:1px solid #1D4ED8;margin-bottom:10px">’
++’<input id="opp-inp" placeholder="Opponent name..." style="width:100%;background:'+t.bg+';border:1px solid '+t.border+';color:'+t.text+';border-radius:8px;padding:10px 12px;font-size:15px;margin-bottom:10px"/>’
++’<button onclick="var v=document.getElementById(\'opp-inp\').value.trim();if(!v)return;S.game={id:Date.now(),date:new Date().toLocaleDateString(),opponent:v,ourHitters:[],theirHitters:[],ourPitchers:[],theirPitchers:[]};S.screen=\'game\';S.pitchStep=null;S.abIdx=0;S.pitcherInning=1;render();" style="width:100%;background:#1D4ED8;border:none;color:white;border-radius:8px;padding:12px;font-size:17px;font-weight:800">⚾ Start New Game</button>’
++’</div>’
++’<button onclick="S.screen=\'history\';render()" style="width:100%;background:'+t.card+';border:1px solid '+t.border+';color:'+t.text3+';border-radius:12px;padding:16px;font-size:14px;text-align:left;margin-bottom:10px">📋 Game History (’+GAMES.length+’)</button>’
++’<div style="background:'+t.card+';border-radius:12px;padding:14px;border:1px solid '+t.border+'">’
++’<div style="color:'+t.text3+';font-size:10px;margin-bottom:8px">PITCH COLOR LEGEND</div>’
++’<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">’+legend+’</div>’
++’<div style="margin-top:8px;color:'+t.text3+';font-size:10px">SPRAY: ● filled = Hit · ✕ circle = Out · Strike zone: IN left, AWAY right (RHB)</div>’
++’</div></div></div>’;
+}
+
+function buildHistory(){
+var t=T();
+var rows=[].concat(GAMES).reverse().map(function(g,idx){
+var batters=(g.ourHitters?g.ourHitters.length:0)+(g.theirHitters?g.theirHitters.length:0);
+var pitchers=(g.ourPitchers?g.ourPitchers.length:0)+(g.theirPitchers?g.theirPitchers.length:0);
+var realIdx=GAMES.length-1-idx;
+var delBtns=S.confirmDel===g.id
+?’<button onclick="GAMES.splice('+realIdx+',1);saveGames();S.confirmDel=null;render()" style="background:#7F1D1D;border:none;color:#FCA5A5;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700">Delete</button>’
++’<button onclick="S.confirmDel=null;render()" style="background:'+t.bg3+';border:none;color:'+t.text3+';border-radius:6px;padding:6px 10px;font-size:12px">Cancel</button>’
+:’<button onclick="S.confirmDel='+g.id+';render()" style="background:none;border:1px solid '+t.border+';color:'+t.text3+';border-radius:6px;padding:6px 10px;font-size:12px">🗑</button>’;
+return’<div style="background:'+t.card+';border-radius:12px;padding:16px;margin-bottom:10px;border:1px solid '+t.border+';display:flex;align-items:center;gap:10px">’
++’<div style="flex:1;cursor:pointer" onclick="S.histGame=GAMES['+(realIdx)+'];S.showReport=true;S.reportView=\'ourHit\';S.reportDone=false;S.reportText=\'\';render()">’
++’<div style="font-weight:700;color:'+t.text+'">vs ‘+g.opponent+’</div>’
++’<div style="color:'+t.text3+';font-size:13px">’+g.date+’ · ‘+batters+’ batters · ‘+pitchers+’ pitchers</div>’
++’</div><div style="display:flex;gap:6px">’+delBtns+’</div></div>’;
+}).join(””);
+var rHtml=S.showReport&&S.histGame?buildReport(S.histGame):””;
+return’<div style="min-height:100vh;padding:20px;background:'+t.bg+'">’
++’<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">’
++’<button onclick="S.screen=\'home\';render()" style="background:'+t.card+';border:none;color:'+t.text3+';border-radius:8px;padding:8px 14px">← Back</button>’
++’<div style="font-size:18px;font-weight:700;color:'+t.text+'">Game History</div></div>’
++(!GAMES.length?’<div style="color:'+t.text3+';text-align:center;padding:40px">No games saved yet</div>’:rows)
++rHtml+’</div>’;
+}
+
+function buildGame(){
+var t=T(),a=accent(),cur=getCurrent();
+var mainContent=””;
+if(!cur){
+mainContent=’<div style="text-align:center;padding:60px;color:'+t.text3+'">’
++’<div style="font-size:38px;margin-bottom:10px">’+(S.sub===“hitters”?“🏏”:“⚾”)+’</div>’
++’<div style="font-size:14px">Open ☰ to select a ‘+(S.sub===“hitters”?“batter”:“pitcher”)+’</div></div>’;
+}else if(S.sub===“hitters”){
+mainContent=buildHitterView(cur);
+}else{
+mainContent=buildPitcherView(cur);
+}
+var sideHtml=S.sidebarOpen?buildSidebar():””;
+var repHtml=S.showReport&&S.game?buildReport(S.game):””;
+return’<div style="display:flex;flex-direction:column;min-height:100vh;background:'+t.bg+'">’
++’<div style="background:'+t.bg2+';border-bottom:1px solid '+t.border+';padding:10px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">’
++’<button onclick="S.sidebarOpen=true;render()" style="background:'+t.bg3+';border:none;color:'+t.text+';border-radius:8px;padding:8px 13px;font-size:15px">☰</button>’
++’<div style="flex:1;font-weight:700;font-size:14px;color:'+t.text+'">vs ‘+S.game.opponent+’</div>’
++’<div style="display:flex;background:'+t.bg+';border-radius:8px;padding:3px;gap:2px">’
++’<button onclick=“S.side='our';S.pitchStep=null;render()” style=“padding:6px 12px;border-radius:6px;border:none;font-size:12px;font-weight:700;background:’+(S.side===“our”?”#1D4ED8”:“transparent”)+’;color:’+(S.side===“our”?“white”:t.text3)+’”>🏠 Our</button>’
++’<button onclick=“S.side='their';S.pitchStep=null;render()” style=“padding:6px 12px;border-radius:6px;border:none;font-size:12px;font-weight:700;background:’+(S.side===“their”?”#7C3AED”:“transparent”)+’;color:’+(S.side===“their”?“white”:t.text3)+’”>👁 Opp</button>’
++’</div>’
++’<div style="display:flex;background:'+t.bg+';border-radius:8px;padding:3px;gap:2px">’
++’<button onclick=“S.sub='hitters';S.pitchStep=null;render()” style=“padding:6px 11px;border-radius:6px;border:none;font-size:12px;font-weight:700;background:’+(S.sub===“hitters”?a:“transparent”)+’;color:’+(S.sub===“hitters”?“white”:t.text3)+’”>🏏 Hitters</button>’
++’<button onclick=“S.sub='pitchers';S.pitchStep=null;render()” style=“padding:6px 11px;border-radius:6px;border:none;font-size:12px;font-weight:700;background:’+(S.sub===“pitchers”?a:“transparent”)+’;color:’+(S.sub===“pitchers”?“white”:t.text3)+’”>⚾ Pitchers</button>’
++’</div>’
++’<button onclick=“S.dayMode=!S.dayMode;render()” style=“background:’+(S.dayMode?”#F59E0B”:”#1E293B”)+’;border:none;color:’+(S.dayMode?”#0F172A”:”#F59E0B”)+’;border-radius:8px;padding:8px 11px;font-size:14px”>’+(S.dayMode?“☀️”:“🌙”)+’</button>’
++’<button onclick="S.showReport=true;S.reportView=\'ourHit\';S.reportDone=false;S.reportText=\'\';render()" style="background:#065F46;border:none;color:white;border-radius:8px;padding:8px 11px;font-size:12px;font-weight:700">📄</button>’
++’<button onclick="if(S.game){GAMES.push(S.game);saveGames();}S.game=null;S.screen=\'home\';render()" style="background:#7F1D1D;border:none;color:#FCA5A5;border-radius:8px;padding:8px 11px;font-size:12px;font-weight:700">End</button>’
++’</div>’
++’<div style="padding:7px 14px;background:'+t.bg+';border-bottom:1px solid '+t.border+';display:flex;align-items:center;gap:8px">’
++’<div style="color:'+a+';font-weight:700;font-size:13px">’+(S.side===“our”?“Our Team”:“Opponent”)+’ — ‘+(S.sub===“hitters”?“Hitters”:“Pitchers”)+’</div>’
++(cur?’<span style="color:'+t.text3+';font-size:12px">· ‘+cur.name+’</span>’:””)
++’</div>’
++’<div style="flex:1;padding:14px;overflow-y:auto">’+mainContent+’</div>’
++sideHtml+repHtml+’</div>’;
+}
+
+render();
+</script>
+
+</body>
+</html>
